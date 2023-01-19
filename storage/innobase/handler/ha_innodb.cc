@@ -18698,6 +18698,7 @@ void lock_wait_wsrep_kill(trx_t *bf_trx, ulong thd_id, trx_id_t trx_id)
       {
         wsrep_thd_LOCK(vthd);
         wsrep_thd_set_wsrep_aborter(NULL, vthd);
+        vtrx->lock.was_chosen_as_deadlock_victim= false;
         wsrep_thd_UNLOCK(vthd);
 
         WSREP_DEBUG("wsrep_thd_bf_abort has failed, victim %lu will survive",
