@@ -1199,9 +1199,8 @@ dberr_t btr_cur_t::search_leaf(const dtuple_t *tuple, page_cur_mode_t mode,
       case RW_S_LATCH:
         if ((latch_mode & ~12) != RW_S_LATCH)
         {
-          rw_latch= rw_lock_type_t(latch_mode & ~12);
-          ut_ad(rw_latch == RW_X_LATCH || rw_latch == RW_SX_LATCH);
-          goto relatch;
+          ut_ad(rw_lock_type_t(latch_mode & ~12) == RW_X_LATCH);
+          goto relatch_x;
         }
         if (latch_mode != BTR_MODIFY_PREV)
         {
@@ -1214,10 +1213,10 @@ dberr_t btr_cur_t::search_leaf(const dtuple_t *tuple, page_cur_mode_t mode,
       case RW_SX_LATCH:
         ut_ad(rw_latch == RW_S_LATCH ||
               latch_mode == BTR_MODIFY_ROOT_AND_LEAF);
-        rw_latch= RW_X_LATCH;
-      relatch:
+      relatch_x:
         mtr->rollback_to_savepoint(block_savepoint);
         height= ULINT_UNDEFINED;
+        rw_latch= RW_X_LATCH;
         goto search_loop;
       case RW_X_LATCH:
         if (latch_mode == BTR_MODIFY_TREE)
@@ -1280,6 +1279,7 @@ dberr_t btr_cur_t::search_leaf(const dtuple_t *tuple, page_cur_mode_t mode,
       static_assert(BTR_MODIFY_PREV & BTR_MODIFY_LEAF, "");
       static_assert(BTR_SEARCH_PREV & BTR_SEARCH_LEAF, "");
       ut_ad(!latch_by_caller);
+
       if (rw_latch == RW_NO_LATCH)
       {
         /* latch also siblings from left to right */
@@ -1377,13 +1377,11 @@ release_tree:
   case BTR_MODIFY_TREE:
     if (btr_cur_need_opposite_intention(block->page.frame, lock_intention,
                                         page_cur.rec))
-    {
       /* If the rec is the first or last in the page for pessimistic
       delete intention, it might cause node_ptr insert for the upper
       level. We should change the intention and retry. */
     need_opposite_intention:
       return pessimistic_search_leaf(tuple, mode, mtr);
-    }
 
     if (detected_same_key_root || lock_intention != BTR_INTENTION_BOTH ||
         index()->is_unique() ||
@@ -1448,60 +1446,48 @@ release_tree:
   if (!--height)
   {
     /* We are about to access the leaf level. */
-    rw_latch= RW_NO_LATCH;
 
     switch (latch_mode) {
     case BTR_MODIFY_ROOT_AND_LEAF:
       rw_latch= RW_X_LATCH;
       break;
-    default:
-      break;
     case BTR_MODIFY_PREV: /* ibuf_insert() or btr_pcur_move_to_prev() */
     case BTR_SEARCH_PREV: /* btr_pcur_move_to_prev() */
+      ut_ad(rw_latch == RW_S_LATCH || rw_latch == RW_X_LATCH);
+
       if (page_has_prev(block->page.frame) &&
           page_rec_is_first(page_cur.rec, block->page.frame))
       {
         ut_ad(block_savepoint + 1 == mtr->get_savepoint());
+        /* The level-2 parent page latch that we are holding is
+        preventing splits or merges while we temporarily release the
+        level-1 page latch. */
+        if (rw_latch == RW_S_LATCH)
+          block->page.lock.s_unlock();
+        else
+          block->page.lock.x_unlock();
+        mtr->lock_register(block_savepoint, MTR_MEMO_BUF_FIX);
+        static_assert(rw_lock_type_t(BTR_MODIFY_PREV & ~4) == RW_X_LATCH, "");
+        static_assert(rw_lock_type_t(BTR_SEARCH_PREV & ~4) == RW_S_LATCH, "");
+        rw_latch= rw_lock_type_t(latch_mode & ~4);
         /* Latch the previous page if the node pointer is the leftmost
         of the current page. */
         buf_block_t *left= btr_block_get(*index(),
                                          btr_page_get_prev(block->page.frame),
-                                         RW_NO_LATCH, false, mtr, &err);
-        if (!left)
+                                         rw_latch, false, mtr, &err);
+        if (UNIV_UNLIKELY(!left))
           goto func_exit;
-        static_assert(mtr_memo_type_t(BTR_MODIFY_PREV & ~4) ==
-                      MTR_MEMO_PAGE_X_FIX, "");
-        static_assert(mtr_memo_type_t(BTR_SEARCH_PREV & ~4) ==
-                      MTR_MEMO_PAGE_S_FIX, "");
-        mtr->lock_register(block_savepoint + 1,
-                           mtr_memo_type_t(latch_mode & ~4));
-        /* Because we are violating the latching order here, we will
-        have to temporarily release the right page latch if the left
-        page latch cannot be acquired without waiting. Concurrent page
-        splits or merges are impossible because we are holding a latch
-        on the parent of these sibling pages. */
-        if (latch_mode == BTR_MODIFY_PREV)
-        {
-          if (!left->page.lock.x_lock_try())
-          {
-            block->page.lock.x_unlock();
-            left->page.lock.x_lock();
-          }
-        }
-        else if (!left->page.lock.s_lock_try())
-        {
-          block->page.lock.s_unlock();
-          left->page.lock.s_lock();
-        }
-#ifdef BTR_CUR_HASH_ADAPT
-        btr_search_drop_page_hash_index(left, true);
-#endif
+        mtr->lock_register(block_savepoint, mtr_memo_type_t(rw_latch));
+        if (rw_latch == RW_X_LATCH)
+          block->page.lock.x_lock();
+        else
+          block->page.lock.s_lock();
       }
-      break;
+      goto leaf_with_no_latch;
     case BTR_MODIFY_LEAF:
     case BTR_SEARCH_LEAF:
       if (index()->is_ibuf())
-        break;
+        goto leaf_with_no_latch;
       rw_latch= rw_lock_type_t(latch_mode);
       if (btr_op != BTR_NO_OP &&
           ibuf_should_try(index(), btr_op != BTR_INSERT_OP))
@@ -1512,8 +1498,8 @@ release_tree:
           : BUF_GET_IF_IN_POOL;
       break;
     case BTR_MODIFY_TREE:
-      if (index()->is_ibuf())
-        break;
+      ut_ad(rw_latch == RW_X_LATCH);
+
       if (lock_intention == BTR_INTENTION_INSERT &&
           page_has_next(block->page.frame) &&
           page_rec_is_last(page_cur.rec, block->page.frame))
@@ -1523,6 +1509,10 @@ release_tree:
         mtr->rollback_to_savepoint(block_savepoint);
         goto need_opposite_intention;
       }
+      /* fall through */
+    default:
+    leaf_with_no_latch:
+      rw_latch= RW_NO_LATCH;
     }
   }
 
