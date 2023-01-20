@@ -607,10 +607,23 @@ btr_pcur_move_backward_from_page(
 	if (page_has_prev(block->page.frame)) {
 		buf_block_t* left_block
 			= mtr->at_savepoint(mtr->get_savepoint() - 1);
-		ut_ad(!memcmp_aligned<4>(left_block->page.frame
-					 + FIL_PAGE_NEXT,
-					 block->page.frame
-					 + FIL_PAGE_OFFSET, 4));
+		if (memcmp_aligned<4>(left_block->page.frame
+				      + FIL_PAGE_NEXT,
+				      block->page.frame
+				      + FIL_PAGE_OFFSET, 4)) {
+			/* This should be the right sibling page. */
+			ut_ad(!memcmp_aligned<4>(left_block->page.frame
+						 + FIL_PAGE_PREV,
+						 block->page.frame
+						 + FIL_PAGE_OFFSET, 4));
+			/* The previous one must be the left sibling. */
+			left_block
+				= mtr->at_savepoint(mtr->get_savepoint() - 2);
+			ut_ad(!memcmp_aligned<4>(left_block->page.frame
+						 + FIL_PAGE_NEXT,
+						 block->page.frame
+						 + FIL_PAGE_OFFSET, 4));
+		}
 		if (btr_pcur_is_before_first_on_page(cursor)) {
 			page_cur_set_after_last(left_block,
 						&cursor->btr_cur.page_cur);
