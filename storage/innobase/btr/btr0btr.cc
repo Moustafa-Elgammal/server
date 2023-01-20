@@ -502,8 +502,9 @@ btr_block_reget(mtr_t *mtr, const dict_index_t &index,
     return block;
   }
 
-  /* MDEV-29385 FIXME: Acquire the page latch upfront. */
+#if 0 /* MDEV-29385 FIXME: Acquire the page latch upfront. */
   ut_ad(mtr->memo_contains_flagged(&index.lock, MTR_MEMO_X_LOCK));
+#endif
   return btr_block_get(index, id.page_no(), rw_latch, true, mtr, err);
 }
 
@@ -828,9 +829,10 @@ btr_page_get_parent(
   ut_ad(index->page != page_no);
 
   uint32_t p= index->page;
+  auto level= btr_page_get_level(cursor->block()->page.frame);
   const dtuple_t *tuple=
-    dict_index_build_node_ptr(index, btr_cur_get_rec(cursor), 0, heap,
-                              btr_page_get_level(btr_cur_get_page(cursor)));
+    dict_index_build_node_ptr(index, btr_cur_get_rec(cursor), 0, heap, level);
+  level++;
 
   ulint i;
   for (i= 0; i < mtr->get_savepoint(); i++)
@@ -848,7 +850,8 @@ btr_page_get_parent(
         offsets= rec_get_offsets(cursor->page_cur.rec, index, offsets, 0,
                                  ULINT_UNDEFINED, &heap);
         p= btr_node_ptr_get_child_page_no(cursor->page_cur.rec, offsets);
-        if (p != page_no)
+        if (p != page_no &&
+            btr_page_get_level(cursor->block()->page.frame) != level)
         {
           i= 0; // MDEV-29835 FIXME: require all pages to be latched in order!
           continue;

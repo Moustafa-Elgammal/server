@@ -2700,6 +2700,18 @@ re_evict:
 	    && mode != BUF_GET_IF_IN_POOL_OR_WATCH) {
 	} else if (!ibuf_debug || recv_recovery_is_on()) {
 	} else if (fil_space_t* space = fil_space_t::get(page_id.space())) {
+		for (ulint i = 0; i < mtr->get_savepoint(); i++) {
+			if (buf_block_t* b = mtr->block_at_savepoint(i)) {
+				if (b->page.oldest_modification() > 2
+				    && b->page.lock.have_any()) {
+					/* We are holding a dirty page latch
+					that would hang buf_flush_sync(). */
+					space->release();
+					goto re_evict_fail;
+				}
+			}
+		}
+
 		/* Try to evict the block from the buffer pool, to use the
 		insert buffer (change buffer) as much as possible. */
 
@@ -2741,6 +2753,7 @@ re_evict:
 
 		/* Failed to evict the page; change it directly */
 	}
+re_evict_fail:
 #endif /* UNIV_DEBUG || UNIV_IBUF_DEBUG */
 
 	ut_ad(state > buf_page_t::FREED);

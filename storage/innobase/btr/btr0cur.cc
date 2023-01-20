@@ -1456,10 +1456,8 @@ release_tree:
       break;
     default:
       break;
-    case BTR_MODIFY_PREV:
-      /* This is almost exclusively for ibuf_insert(), but also for
-      btr_pcur_move_to_prev(); the latter is not exercised by mtr */
-    case BTR_SEARCH_PREV:
+    case BTR_MODIFY_PREV: /* ibuf_insert() or btr_pcur_move_to_prev() */
+    case BTR_SEARCH_PREV: /* btr_pcur_move_to_prev() */
       if (page_has_prev(block->page.frame) &&
           page_rec_is_first(page_cur.rec, block->page.frame))
       {

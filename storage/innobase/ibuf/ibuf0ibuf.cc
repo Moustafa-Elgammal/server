@@ -4037,12 +4037,11 @@ bool ibuf_delete_rec(const page_id_t page_id, btr_pcur_t* pcur,
 
 	ibuf_mtr_start(mtr);
 	mysql_mutex_lock(&ibuf_mutex);
-	ibuf.index->lock.u_lock(SRW_LOCK_ARGS(__FILE__, __LINE__));
+	mtr_x_lock_index(ibuf.index, mtr);
 
 	if (!ibuf_restore_pos(page_id, search_tuple, BTR_PURGE_TREE,
 			      pcur, mtr)) {
 		mysql_mutex_unlock(&ibuf_mutex);
-		ibuf.index->lock.u_unlock();
 		goto func_exit;
 	}
 
@@ -4057,7 +4056,6 @@ bool ibuf_delete_rec(const page_id_t page_id, btr_pcur_t* pcur,
 	}
 
 	mysql_mutex_unlock(&ibuf_mutex);
-	ibuf.index->lock.u_unlock();
 	ibuf_btr_pcur_commit_specify_mtr(pcur, mtr);
 
 func_exit:
