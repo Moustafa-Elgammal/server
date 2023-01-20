@@ -152,40 +152,6 @@ struct mtr_t {
     return b.oldest_modification() <= 1 && b.id().space() < SRV_TMP_SPACE_ID;
   }
 
-  /** X-latch a not yet latched block after a savepoint. */
-  void x_latch_at_savepoint(ulint savepoint, buf_block_t *block)
-  {
-    ut_ad(is_active());
-    ut_ad(!memo_contains_flagged(block, MTR_MEMO_PAGE_S_FIX |
-                                 MTR_MEMO_PAGE_X_FIX | MTR_MEMO_PAGE_SX_FIX));
-    mtr_memo_slot_t &slot= m_memo[savepoint];
-    ut_ad(slot.object == block);
-    ut_ad(slot.type == MTR_MEMO_BUF_FIX);
-    slot.type= MTR_MEMO_PAGE_X_FIX;
-    block->page.lock.x_lock();
-    ut_ad(!block->page.is_io_fixed());
-
-    if (!m_made_dirty)
-      m_made_dirty= is_block_dirtied(block->page);
-  }
-
-  /** U-latch a not yet latched block after a savepoint. */
-  void sx_latch_at_savepoint(ulint savepoint, buf_block_t *block)
-  {
-    ut_ad(is_active());
-    ut_ad(!memo_contains_flagged(block, MTR_MEMO_PAGE_S_FIX |
-                                 MTR_MEMO_PAGE_X_FIX | MTR_MEMO_PAGE_SX_FIX));
-    mtr_memo_slot_t &slot= m_memo[savepoint];
-    ut_ad(slot.object == block);
-    ut_ad(slot.type == MTR_MEMO_BUF_FIX);
-    slot.type= MTR_MEMO_PAGE_SX_FIX;
-    block->page.lock.u_lock();
-    ut_ad(!block->page.is_io_fixed());
-
-    if (!m_made_dirty)
-      m_made_dirty= is_block_dirtied(block->page);
-  }
-
   /** @return the logging mode */
   mtr_log_t get_log_mode() const
   {

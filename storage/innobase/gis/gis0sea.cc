@@ -73,6 +73,70 @@ rtr_adjust_parent_path(
 	}
 }
 
+/** Latches the leaf page or pages requested.
+@param[in]	block_savepoint	leaf page where the search converged
+@param[in]	latch_mode	BTR_SEARCH_LEAF, ...
+@param[in]	cursor		cursor
+@param[in]	mtr		mini-transaction */
+static void
+rtr_latch_leaves(
+	ulint			block_savepoint,
+	btr_latch_mode		latch_mode,
+	btr_cur_t*		cursor,
+	mtr_t*			mtr)
+{
+	compile_time_assert(int(MTR_MEMO_PAGE_S_FIX) == int(RW_S_LATCH));
+	compile_time_assert(int(MTR_MEMO_PAGE_X_FIX) == int(RW_X_LATCH));
+	compile_time_assert(int(MTR_MEMO_PAGE_SX_FIX) == int(RW_SX_LATCH));
+
+	buf_block_t* block = mtr->at_savepoint(block_savepoint);
+
+	ut_ad(block->page.id().space() == cursor->index()->table->space->id);
+	ut_ad(block->page.in_file());
+	ut_ad(mtr->memo_contains_flagged(&cursor->index()->lock,
+					 MTR_MEMO_S_LOCK
+					 | MTR_MEMO_X_LOCK
+					 | MTR_MEMO_SX_LOCK));
+
+	switch (latch_mode) {
+		uint32_t	left_page_no;
+		uint32_t	right_page_no;
+	default:
+		ut_ad(latch_mode == BTR_CONT_MODIFY_TREE);
+		break;
+	case BTR_MODIFY_TREE:
+		/* It is exclusive for other operations which calls
+		btr_page_set_prev() */
+		ut_ad(mtr->memo_contains_flagged(&cursor->index()->lock,
+						 MTR_MEMO_X_LOCK
+						 | MTR_MEMO_SX_LOCK));
+		/* x-latch also siblings from left to right */
+		left_page_no = btr_page_get_prev(block->page.frame);
+
+		if (left_page_no != FIL_NULL) {
+			btr_block_get(*cursor->index(), left_page_no, RW_X_LATCH,
+				      true, mtr);
+		}
+
+		mtr->upgrade_buffer_fix(block_savepoint, RW_X_LATCH);
+
+		right_page_no = btr_page_get_next(block->page.frame);
+
+		if (right_page_no != FIL_NULL) {
+			btr_block_get(*cursor->index(), right_page_no,
+				      RW_X_LATCH, true, mtr);
+		}
+		break;
+	case BTR_SEARCH_LEAF:
+	case BTR_MODIFY_LEAF:
+		rw_lock_type_t mode =
+			rw_lock_type_t(latch_mode & (RW_X_LATCH | RW_S_LATCH));
+		static_assert(int{RW_S_LATCH} == int{BTR_SEARCH_LEAF}, "");
+		static_assert(int{RW_X_LATCH} == int{BTR_MODIFY_LEAF}, "");
+		mtr->upgrade_buffer_fix(block_savepoint, mode);
+	}
+}
+
 /*************************************************************//**
 Find the next matching record. This function is used by search
 or record locating during index delete/update.
@@ -377,7 +441,7 @@ rtr_pcur_getnext_from_path(
 				    && level == 0) {
 					ut_ad(rw_latch == RW_NO_LATCH);
 
-					btr_cur_latch_leaves(
+					rtr_latch_leaves(
 						block_savepoint,
 						BTR_MODIFY_TREE,
 						btr_cur, mtr);
@@ -673,7 +737,7 @@ dberr_t rtr_search_to_nth_level(ulint level, const dtuple_t *tuple,
     if (rw_latch == RW_NO_LATCH)
     {
       ut_ad(block == mtr->at_savepoint(block_savepoint));
-      btr_cur_latch_leaves(block_savepoint, latch_mode, cur, mtr);
+      rtr_latch_leaves(block_savepoint, latch_mode, cur, mtr);
     }
 
     switch (latch_mode) {
@@ -847,7 +911,7 @@ dberr_t rtr_search_to_nth_level(ulint level, const dtuple_t *tuple,
     {
       ut_ad(upper_rw_latch == RW_X_LATCH);
       for (auto i= root_savepoint, n= mtr->get_savepoint(); i < n; i++)
-        mtr->x_latch_at_savepoint(i, mtr->at_savepoint(i));
+        mtr->upgrade_buffer_fix(i, RW_X_LATCH);
     }
 
     /* Go to the child node */

@@ -998,26 +998,29 @@ done:
 void mtr_t::upgrade_buffer_fix(ulint savepoint, rw_lock_type_t rw_latch)
 {
   ut_ad(is_active());
-  ut_ad(savepoint < m_memo.size());
-
   mtr_memo_slot_t &slot= m_memo[savepoint];
   ut_ad(slot.type == MTR_MEMO_BUF_FIX);
   buf_block_t *block= static_cast<buf_block_t*>(slot.object);
   ut_d(const auto state= block->page.state());
   ut_ad(state > buf_page_t::UNFIXED);
   ut_ad(state > buf_page_t::WRITE_FIX || state < buf_page_t::READ_FIX);
+  static_assert(int{MTR_MEMO_PAGE_S_FIX} == int{RW_S_LATCH}, "");
+  static_assert(int{MTR_MEMO_PAGE_X_FIX} == int{RW_X_LATCH}, "");
+  static_assert(int{MTR_MEMO_PAGE_SX_FIX} == int{RW_SX_LATCH}, "");
+  slot.type= mtr_memo_type_t(rw_latch);
 
   switch (rw_latch) {
   default:
     ut_ad("invalid state" == 0);
     break;
+  case RW_S_LATCH:
+    block->page.lock.s_lock();
+    break;
   case RW_SX_LATCH:
-    slot.type= MTR_MEMO_PAGE_SX_FIX;
     block->page.lock.u_lock();
     ut_ad(!block->page.is_io_fixed());
     break;
   case RW_X_LATCH:
-    slot.type= MTR_MEMO_PAGE_X_FIX;
     block->page.lock.x_lock();
     ut_ad(!block->page.is_io_fixed());
   }

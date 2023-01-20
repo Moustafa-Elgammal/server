@@ -337,7 +337,7 @@ struct btr_pcur_t
   /** the modify clock value of the buffer block when the cursor position
   was stored */
   ib_uint64_t modify_clock= 0;
-  /** btr_pcur_store_position() and btr_pcur_restore_position() state. */
+  /** btr_pcur_store_position() and restore_position() state. */
   enum pcur_pos_t pos_state= BTR_PCUR_NOT_POSITIONED;
   page_cur_mode_t search_mode= PAGE_CUR_UNSUPP;
   /** the transaction, if we know it; otherwise this field is not defined;
@@ -364,8 +364,8 @@ struct btr_pcur_t
   supremum.
   (4) cursor was positioned before the first or after the last in an
   empty tree: restores to before first or after the last in the tree.
-  @param restore_latch_mode BTR_SEARCH_LEAF, ...
-  @param mtr mtr
+  @param latch_mode  BTR_SEARCH_LEAF, ...
+  @param mtr         mini-transaction
   @retval SAME_ALL cursor position on user rec and points on
   the record with the same field values as in the stored record,
   @retval SAME_UNIQ cursor position is on user rec and points on the

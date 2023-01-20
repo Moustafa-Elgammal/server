@@ -624,18 +624,6 @@ btr_rec_copy_externally_stored_field(
 	ulint*			len,
 	mem_heap_t*		heap);
 
-/** Latches the leaf page or pages requested.
-@param[in]	block		leaf page where the search converged
-@param[in]	latch_mode	BTR_SEARCH_LEAF, ...
-@param[in]	cursor		cursor
-@param[in,out]	mtr		mini-transaction */
-void
-btr_cur_latch_leaves(
-	ulint			block_savepoint,
-	btr_latch_mode		latch_mode,
-	btr_cur_t*		cursor,
-	mtr_t*			mtr);
-
 /*######################################################################*/
 
 /** In the pessimistic delete, if the page data size drops below this
@@ -696,11 +684,6 @@ to know struct size! */
 struct btr_cur_t {
 	page_cur_t	page_cur;	/*!< page cursor */
 	purge_node_t*	purge_node;	/*!< purge node, for BTR_DELETE */
-	buf_block_t*	left_block;	/*!< this field is used to store
-					a pointer to the left neighbor
-					page, in the cases
-					BTR_SEARCH_PREV and
-					BTR_MODIFY_PREV */
 	/*------------------------------*/
 	que_thr_t*	thr;		/*!< this field is only used
 					when search_leaf()

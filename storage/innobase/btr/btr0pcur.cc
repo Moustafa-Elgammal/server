@@ -214,8 +214,8 @@ btr_pcur_copy_stored_position(
 
 /** Optimistically latches the leaf page or pages requested.
 @param[in]	block		guessed buffer block
-@param[in,out]	latch_mode	BTR_SEARCH_LEAF, ...
 @param[in,out]	pcur		cursor
+@param[in,out]	latch_mode	BTR_SEARCH_LEAF, ...
 @param[in,out]	mtr		mini-transaction
 @return true if success */
 TRANSACTIONAL_TARGET
@@ -240,11 +240,12 @@ static bool btr_pcur_optimistic_latch_leaves(buf_block_t *block,
   default:
     ut_ad(*latch_mode == BTR_SEARCH_LEAF || *latch_mode == BTR_MODIFY_LEAF);
     return buf_page_optimistic_get(mode, block, pcur->modify_clock, mtr);
-  case BTR_SEARCH_PREV: /* btr_pcur_move_backward_from_page() */
-  case BTR_MODIFY_PREV: /* Ditto, or ibuf_insert() */
+  case BTR_SEARCH_PREV:
+  case BTR_MODIFY_PREV:
     page_id_t id{0};
     uint32_t left_page_no;
     ulint zip_size;
+    buf_block_t *left_block= nullptr;
     {
       transactional_shared_lock_guard<block_lock> g{block->page.lock};
       if (block->modify_clock != pcur->modify_clock)
@@ -256,21 +257,18 @@ static bool btr_pcur_optimistic_latch_leaves(buf_block_t *block,
 
     if (left_page_no != FIL_NULL)
     {
-      pcur->btr_cur.left_block=
+      left_block=
         buf_page_get_gen(page_id_t(id.space(), left_page_no), zip_size,
                          mode, nullptr, BUF_GET_POSSIBLY_FREED, mtr);
 
-      if (pcur->btr_cur.left_block &&
-          btr_page_get_next(pcur->btr_cur.left_block->page.frame) !=
-          id.page_no())
+      if (left_block &&
+          btr_page_get_next(left_block->page.frame) != id.page_no())
       {
 release_left_block:
         mtr->release_last_page();
         return false;
       }
     }
-    else
-      pcur->btr_cur.left_block= nullptr;
 
     if (buf_page_optimistic_get(mode, block, pcur->modify_clock, mtr))
     {
@@ -287,7 +285,7 @@ release_left_block:
     }
 
     ut_ad(block->page.buf_fix_count());
-    if (pcur->btr_cur.left_block)
+    if (left_block)
       goto release_left_block;
     return false;
   }
@@ -302,7 +300,7 @@ struct optimistic_latch_leaves
   btr_latch_mode *const latch_mode;
   mtr_t *const mtr;
 
-  bool operator() (buf_block_t *hint) const
+  bool operator()(buf_block_t *hint) const
   {
     return hint &&
       btr_pcur_optimistic_latch_leaves(hint, cursor, latch_mode, mtr);
@@ -322,8 +320,8 @@ record GREATER than the user record which was the predecessor of the
 supremum.
 (4) cursor was positioned before the first or after the last in an
 empty tree: restores to before first or after the last in the tree.
-@param restore_latch_mode BTR_SEARCH_LEAF, ...
-@param mtr mtr
+@param latch_mode  BTR_SEARCH_LEAF, ...
+@param mtr         mini-transaction
 @return btr_pcur_t::SAME_ALL cursor position on user rec and points on
 the record with the same field values as in the stored record,
 btr_pcur_t::SAME_UNIQ cursor position is on user rec and points on the
@@ -377,7 +375,6 @@ btr_pcur_t::restore_position(btr_latch_mode restore_latch_mode, mtr_t *mtr)
 	case BTR_SEARCH_PREV:
 	case BTR_MODIFY_PREV:
 		/* Try optimistic restoration. */
-
 		if (block_when_stored.run_with_hint(
 			optimistic_latch_leaves{this, &restore_latch_mode,
 						mtr})) {
@@ -605,26 +602,28 @@ btr_pcur_move_backward_from_page(
 		return true;
 	}
 
-	buf_block_t* release_block = nullptr;
+	buf_block_t* block = btr_pcur_get_block(cursor);
 
-	if (!page_has_prev(btr_pcur_get_page(cursor))) {
-	} else if (btr_pcur_is_before_first_on_page(cursor)) {
-		release_block = btr_pcur_get_block(cursor);
-		page_cur_set_after_last(cursor->btr_cur.left_block,
-					btr_pcur_get_page_cur(cursor));
-	} else {
-		/* The repositioned cursor did not end on an infimum
-		record on a page. Cursor repositioning acquired a latch
-		also on the previous page, but we do not need the latch:
-		release it. */
-		release_block = cursor->btr_cur.left_block;
+	if (page_has_prev(block->page.frame)) {
+		buf_block_t* left_block
+			= mtr->at_savepoint(mtr->get_savepoint() - 1);
+		ut_ad(!memcmp_aligned<4>(left_block->page.frame
+					 + FIL_PAGE_NEXT,
+					 block->page.frame
+					 + FIL_PAGE_OFFSET, 4));
+		if (btr_pcur_is_before_first_on_page(cursor)) {
+			page_cur_set_after_last(left_block,
+						&cursor->btr_cur.page_cur);
+			/* Release the right sibling. */
+		} else {
+			/* Release the left sibling. */
+			block = left_block;
+		}
+		mtr->release(*block);
 	}
 
 	cursor->latch_mode = latch_mode;
 	cursor->old_rec = nullptr;
-	if (release_block) {
-		mtr->release(*release_block);
-	}
 	return false;
 }
 
