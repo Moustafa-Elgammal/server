@@ -850,9 +850,10 @@ btr_page_get_parent(
         offsets= rec_get_offsets(cursor->page_cur.rec, index, offsets, 0,
                                  ULINT_UNDEFINED, &heap);
         p= btr_node_ptr_get_child_page_no(cursor->page_cur.rec, offsets);
-        if (p != page_no &&
-            btr_page_get_level(cursor->block()->page.frame) != level)
+        if (p != page_no)
         {
+          if (btr_page_get_level(cursor->block()->page.frame) == level)
+            return nullptr;
           i= 0; // MDEV-29835 FIXME: require all pages to be latched in order!
           continue;
         }

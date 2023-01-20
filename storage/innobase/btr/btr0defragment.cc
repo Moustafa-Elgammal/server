@@ -763,10 +763,9 @@ processed:
 		acquire index->lock X-latch.  This entitles us to
 		acquire page latches in any order for the index. */
 		mtr_x_lock_index(index, &mtr);
-		/* This will acquire index->lock U latch, which is allowed
-		when we are already holding the X-latch. */
 		if (buf_block_t *last_block =
-		    item->pcur->restore_position(BTR_MODIFY_TREE, &mtr)
+		    item->pcur->restore_position(
+			    BTR_PURGE_TREE_ALREADY_LATCHED, &mtr)
 		    == btr_pcur_t::CORRUPTED
 		    ? nullptr
 		    : btr_defragment_n_pages(btr_pcur_get_block(item->pcur),

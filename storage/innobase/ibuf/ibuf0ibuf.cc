@@ -3955,8 +3955,6 @@ ibuf_restore_pos(
 				position is to be restored */
 	mtr_t*		mtr)	/*!< in/out: mini-transaction */
 {
-	ut_ad(mode == BTR_MODIFY_LEAF || mode == BTR_PURGE_TREE);
-
 	if (UNIV_LIKELY(pcur->restore_position(mode, mtr) ==
 	      btr_pcur_t::SAME_ALL)) {
 		return true;
@@ -4039,8 +4037,8 @@ bool ibuf_delete_rec(const page_id_t page_id, btr_pcur_t* pcur,
 	mysql_mutex_lock(&ibuf_mutex);
 	mtr_x_lock_index(ibuf.index, mtr);
 
-	if (!ibuf_restore_pos(page_id, search_tuple, BTR_PURGE_TREE,
-			      pcur, mtr)) {
+	if (!ibuf_restore_pos(page_id, search_tuple,
+			      BTR_PURGE_TREE_ALREADY_LATCHED, pcur, mtr)) {
 		mysql_mutex_unlock(&ibuf_mutex);
 		goto func_exit;
 	}
