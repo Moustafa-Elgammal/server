@@ -143,15 +143,6 @@ struct mtr_t {
   buf_block_t *get_already_latched(const page_id_t id, mtr_memo_type_t type)
     const;
 
-  /** @return if we are about to make a clean buffer block dirty */
-  static bool is_block_dirtied(const buf_page_t &b)
-  {
-    ut_ad(b.in_file());
-    ut_ad(b.frame);
-    ut_ad(b.buf_fix_count());
-    return b.oldest_modification() <= 1 && b.id().space() < SRV_TMP_SPACE_ID;
-  }
-
   /** @return the logging mode */
   mtr_log_t get_log_mode() const
   {
@@ -309,23 +300,17 @@ struct mtr_t {
   void release(const index_lock &lock) { release(&lock); }
   /** Release a latch to an unmodified page. */
   void release(const buf_block_t &block) { release(&block); }
-
-  /** Note that the mini-transaction will modify data. */
-  void flag_modified() { m_modifications = true; }
 private:
   /** Release an unmodified object. */
   void release(const void *object);
+public:
   /** Mark the given latched page as modified.
   @param block   page that will be modified */
-  void modify(const buf_block_t& block);
-public:
-  /** Note that the mini-transaction will modify a block. */
-  void set_modified(const buf_block_t &block)
-  { flag_modified(); if (m_log_mode != MTR_LOG_NONE) modify(block); }
+  void set_modified(const buf_block_t &block);
 
   /** Set the state to not-modified. This will not log the changes.
   This is only used during redo log apply, to avoid logging the changes. */
-  void discard_modifications() { m_modifications = false; }
+  void discard_modifications() { m_modifications= false; }
 
   /** Get the LSN of commit().
   @return the commit LSN
@@ -397,27 +382,65 @@ public:
   @retval nullptr    if not found */
   buf_block_t *memo_contains_page_flagged(const byte *ptr, ulint flags) const;
 
-  /** @return true if mini-transaction contains modifications. */
+  /** @return whether this mini-transaction modifies persistent data */
   bool has_modifications() const { return m_modifications; }
 #endif /* UNIV_DEBUG */
 
-  /** Push an object to an mtr memo stack.
-  @param object	object
+  /** Push a buffer page to an the memo.
+  @param block  buffer block
+  @param type	object type: MTR_MEMO_S_LOCK, ... */
+  void memo_push(buf_block_t *block, mtr_memo_type_t type)
+    __attribute__((nonnull))
+  {
+    ut_ad(is_active());
+    ut_ad(type <= MTR_MEMO_PAGE_SX_MODIFY);
+    ut_ad(block->page.buf_fix_count());
+    ut_ad(block->page.in_file());
+#ifdef UNIV_DEBUG
+    switch (type) {
+    case MTR_MEMO_PAGE_S_FIX:
+      ut_ad(block->page.lock.have_s());
+      break;
+    case MTR_MEMO_PAGE_X_FIX: case MTR_MEMO_PAGE_X_MODIFY:
+      ut_ad(block->page.lock.have_x());
+      break;
+    case MTR_MEMO_PAGE_SX_FIX: case MTR_MEMO_PAGE_SX_MODIFY:
+      ut_ad(block->page.lock.have_u_or_x());
+      break;
+    case MTR_MEMO_BUF_FIX:
+      break;
+    case MTR_MEMO_MODIFY:
+    case MTR_MEMO_S_LOCK: case MTR_MEMO_X_LOCK: case MTR_MEMO_SX_LOCK:
+    case MTR_MEMO_SPACE_X_LOCK: case MTR_MEMO_SPACE_S_LOCK:
+      ut_ad("invalid type" == 0);
+    }
+#endif
+    if (!(type & MTR_MEMO_MODIFY));
+    else if (block->page.id().space() >= SRV_TMP_SPACE_ID)
+    {
+      block->page.set_temp_modified();
+      type= mtr_memo_type_t(type & ~MTR_MEMO_MODIFY);
+    }
+    else
+    {
+      m_modifications= true;
+      if (!m_made_dirty)
+        /* If we are going to modify a previously clean persistent page,
+        we must set m_made_dirty, so that commit() will acquire
+        log_sys.flush_order_mutex and insert the block into
+        buf_pool.flush_list. */
+        m_made_dirty= block->page.oldest_modification() <= 1;
+    }
+    m_memo.emplace_back(mtr_memo_slot_t{block, type});
+  }
+
+  /** Push an index lock or tablespace latch to the memo.
+  @param object index lock or tablespace latch
   @param type	object type: MTR_MEMO_S_LOCK, ... */
   void memo_push(void *object, mtr_memo_type_t type) __attribute__((nonnull))
   {
     ut_ad(is_active());
-    /* If this mtr has U or X latched a clean page then we set
-    the m_made_dirty flag. This tells us if we need to
-    grab log_sys.flush_order_mutex at mtr_t::commit() so that we
-    can insert the dirtied page into the buf_pool.flush_list.
-
-    FIXME: Do this only when the MTR_MEMO_MODIFY flag is set! */
-    if (!m_made_dirty &&
-        (type & (MTR_MEMO_PAGE_X_FIX | MTR_MEMO_PAGE_SX_FIX)))
-      m_made_dirty=
-        is_block_dirtied(*static_cast<const buf_page_t*>(object));
-
+    ut_ad(type >= MTR_MEMO_S_LOCK);
     m_memo.emplace_back(mtr_memo_slot_t{object, type});
   }
 
@@ -708,7 +731,7 @@ private:
   /** specifies which operations should be logged; default MTR_LOG_ALL */
   uint16_t m_log_mode:2;
 
-  /** whether at least one buffer pool page was written to */
+  /** whether at least one persistent page was written to */
   uint16_t m_modifications:1;
 
   /** whether at least one previously clean buffer pool page was written to */

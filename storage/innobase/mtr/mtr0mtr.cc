@@ -1146,30 +1146,83 @@ buf_block_t* mtr_t::memo_contains_page_flagged(const byte *ptr, ulint flags)
 
 /** Mark the given latched page as modified.
 @param block   page that will be modified */
-void mtr_t::modify(const buf_block_t &block)
+void mtr_t::set_modified(const buf_block_t &block)
 {
-  mtr_memo_slot_t *found= nullptr;
+  if (block.page.id().space() >= SRV_TMP_SPACE_ID)
+  {
+    const_cast<buf_block_t&>(block).page.set_temp_modified();
+    return;
+  }
+
+  m_modifications= true;
+
+  if (UNIV_UNLIKELY(m_log_mode == MTR_LOG_NONE))
+    return;
 
   for (mtr_memo_slot_t &slot : m_memo)
   {
     if (slot.object == &block &&
         slot.type & (MTR_MEMO_PAGE_X_FIX | MTR_MEMO_PAGE_SX_FIX))
     {
-      found= &slot;
-      break;
+      if (slot.type & MTR_MEMO_MODIFY)
+        ut_ad(m_made_dirty || block.page.oldest_modification() > 1);
+      else
+      {
+        slot.type= static_cast<mtr_memo_type_t>(slot.type | MTR_MEMO_MODIFY);
+        if (!m_made_dirty)
+          m_made_dirty= block.page.oldest_modification() <= 1;
+      }
+      return;
     }
   }
 
-  if (UNIV_UNLIKELY(!found))
+  /* This must be PageConverter::update_page() in IMPORT TABLESPACE. */
+  ut_ad(m_memo.empty());
+  ut_ad(!block.page.in_LRU_list);
+}
+
+void mtr_t::init(buf_block_t *b)
+{
+  const page_id_t id{b->page.id()};
+  ut_ad(is_named_space(id.space()));
+  ut_ad(!m_freed_pages == !m_freed_space);
+  ut_ad(memo_contains_flagged(b, MTR_MEMO_PAGE_X_FIX));
+
+  if (id.space() >= SRV_TMP_SPACE_ID)
+    b->page.set_temp_modified();
+  else
   {
-    /* This must be PageConverter::update_page() in IMPORT TABLESPACE. */
-    ut_ad(m_memo.empty());
-    ut_ad(!block.page.in_LRU_list);
-    return;
+    m_modifications= true;
+    for (mtr_memo_slot_t &slot : m_memo)
+    {
+      if (slot.object == b && slot.type & MTR_MEMO_PAGE_X_FIX)
+      {
+        slot.type= MTR_MEMO_PAGE_X_MODIFY;
+        m_made_dirty= true;
+        goto found;
+      }
+    }
+    ut_ad("block not X-latched" == 0);
   }
-  found->type= static_cast<mtr_memo_type_t>(found->type | MTR_MEMO_MODIFY);
-  if (!m_made_dirty)
-    m_made_dirty= is_block_dirtied(block.page);
+
+ found:
+  if (UNIV_LIKELY_NULL(m_freed_space) &&
+      m_freed_space->id == id.space() &&
+      m_freed_pages->remove_if_exists(id.page_no()) &&
+      m_freed_pages->empty())
+  {
+    delete m_freed_pages;
+    m_freed_pages= nullptr;
+    m_freed_space= nullptr;
+  }
+
+  b->page.set_reinit(b->page.state() & buf_page_t::LRU_MASK);
+
+  if (!is_logged())
+    return;
+
+  m_log.close(log_write<INIT_PAGE>(id, &b->page));
+  m_last_offset= FIL_PAGE_TYPE;
 }
 
 /** Free a page.
@@ -1215,7 +1268,17 @@ void mtr_t::free(const fil_space_t &space, uint32_t offset)
           ut_d(bool upgraded=) block->page.lock.x_lock_upgraded();
           ut_ad(upgraded);
         }
-        slot.type= MTR_MEMO_PAGE_X_MODIFY;
+        if (id.space() >= SRV_TMP_SPACE_ID)
+        {
+          block->page.set_temp_modified();
+          slot.type= MTR_MEMO_PAGE_X_FIX;
+        }
+        else
+        {
+          slot.type= MTR_MEMO_PAGE_X_MODIFY;
+          if (!m_made_dirty)
+            m_made_dirty= block->page.oldest_modification() <= 1;
+        }
 #ifdef BTR_CUR_HASH_ADAPT
         if (block->index)
           btr_search_drop_page_hash_index(block, false);
@@ -1224,8 +1287,6 @@ void mtr_t::free(const fil_space_t &space, uint32_t offset)
       }
     }
 
-    if (freed && !m_made_dirty)
-      m_made_dirty= is_block_dirtied(freed->page);
     m_log.close(log_write<FREE_PAGE>(id, nullptr));
   }
 }
