@@ -632,8 +632,10 @@ bool trans_xa_commit(THD *thd)
 
       xid_state.xid_cache_element= xs;
       ha_commit_or_rollback_by_xid(thd->lex->xid, !res);
-      if (thd->is_error())
+      if (!res && thd->is_error())
       {
+        // hton completion error retains xs/xid in the cache,
+        // unless there had been already one as reflected by `res`.
         res= true;
         goto _end_external_xid;
       }
@@ -770,6 +772,7 @@ bool trans_xa_rollback(THD *thd)
 
     if (auto xs= xid_cache_search(thd, thd->lex->xid))
     {
+      bool res;
       MDL_request mdl_request;
       MDL_REQUEST_INIT(&mdl_request, MDL_key::BACKUP, "", "", MDL_BACKUP_COMMIT,
                        MDL_EXPLICIT);
@@ -789,12 +792,12 @@ bool trans_xa_rollback(THD *thd)
       {
         thd->backup_commit_lock= &mdl_request;
       }
-      xa_trans_rolled_back(xs);
+      res= xa_trans_rolled_back(xs);
       DBUG_ASSERT(!xid_state.xid_cache_element);
 
       xid_state.xid_cache_element= xs;
       ha_commit_or_rollback_by_xid(thd->lex->xid, 0);
-      if (thd->is_error())
+      if (!res && thd->is_error())
       {
         goto _end_external_xid;
       }

@@ -2285,7 +2285,10 @@ void rpl_group_info::cleanup_context(THD *thd, bool error)
 
   if (unlikely(error))
   {
-    DBUG_ASSERT(!thd->transaction->xid_state.xid_cache_element);
+    // leave alone any XA prepared transactions
+    if (thd->transaction->xid_state.is_explicit_XA() &&
+        thd->transaction->xid_state.get_state_code() != XA_PREPARED)
+      xa_trans_force_rollback(thd);
 
     thd->release_transactional_locks();
 
